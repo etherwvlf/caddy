@@ -63,6 +63,12 @@ func (fsrv *FileServer) directoryListing(ctx context.Context, fileSystem fs.FS, 
 			continue
 		}
 
+		// keep track of the most recently modified item in the listing
+		modTime := info.ModTime()
+		if tplCtx.lastModified.IsZero() || modTime.After(tplCtx.lastModified) {
+			tplCtx.lastModified = modTime
+		}
+
 		isDir := entry.IsDir() || fsrv.isSymlinkTargetDir(fileSystem, info, root, urlPath)
 
 		// add the slash after the escape of path to avoid escaping the slash as well
@@ -74,6 +80,13 @@ func (fsrv *FileServer) directoryListing(ctx context.Context, fileSystem fs.FS, 
 		}
 
 		size := info.Size()
+
+		if !isDir {
+			// increase the total by the symlink's size, not the target's size,
+			// by incrementing before we follow the symlink
+			tplCtx.TotalFileSize += size
+		}
+
 		fileIsSymlink := isSymlink(info)
 		symlinkPath := ""
 		if fileIsSymlink {
@@ -97,7 +110,8 @@ func (fsrv *FileServer) directoryListing(ctx context.Context, fileSystem fs.FS, 
 		}
 
 		if !isDir {
-			tplCtx.TotalFileSize += size
+			// increase the total including the symlink target's size
+			tplCtx.TotalFileSizeFollowingSymlinks += size
 		}
 
 		u := url.URL{Path: "./" + name} // prepend with "./" to fix paths with ':' in the name
@@ -108,7 +122,7 @@ func (fsrv *FileServer) directoryListing(ctx context.Context, fileSystem fs.FS, 
 			Name:        name,
 			Size:        size,
 			URL:         u.String(),
-			ModTime:     info.ModTime().UTC(),
+			ModTime:     modTime.UTC(),
 			Mode:        info.Mode(),
 			Tpl:         tplCtx, // a reference up to the template context is useful
 			SymlinkPath: symlinkPath,
@@ -126,7 +140,7 @@ type browseTemplateContext struct {
 	// The full path of the request.
 	Path string `json:"path"`
 
-	// Whether the parent directory is browseable.
+	// Whether the parent directory is browsable.
 	CanGoUp bool `json:"can_go_up"`
 
 	// The items (files and folders) in the path.
@@ -144,8 +158,14 @@ type browseTemplateContext struct {
 	// The number of files (items that aren't directories) in the listing.
 	NumFiles int `json:"num_files"`
 
-	// The total size of all files in the listing.
+	// The total size of all files in the listing. Only includes the
+	// size of the files themselves, not the size of symlink targets
+	// (i.e. the calculation of this value does not follow symlinks).
 	TotalFileSize int64 `json:"total_file_size"`
+
+	// The total size of all files in the listing, including the
+	// size of the files targeted by symlinks.
+	TotalFileSizeFollowingSymlinks int64 `json:"total_file_size_following_symlinks"`
 
 	// Sort column used
 	Sort string `json:"sort,omitempty"`
@@ -155,6 +175,10 @@ type browseTemplateContext struct {
 
 	// Display format (list or grid)
 	Layout string `json:"layout,omitempty"`
+
+	// The most recent file modification date in the listing.
+	// Used for HTTP header purposes.
+	lastModified time.Time
 }
 
 // Breadcrumbs returns l.Path where every element maps
@@ -276,6 +300,12 @@ func (fi fileInfo) HumanSize() string {
 // (i.e. power of 2 or base 1024).
 func (btc browseTemplateContext) HumanTotalFileSize() string {
 	return humanize.IBytes(uint64(btc.TotalFileSize))
+}
+
+// HumanTotalFileSizeFollowingSymlinks is the same as HumanTotalFileSize
+// except the returned value reflects the size of symlink targets.
+func (btc browseTemplateContext) HumanTotalFileSizeFollowingSymlinks() string {
+	return humanize.IBytes(uint64(btc.TotalFileSizeFollowingSymlinks))
 }
 
 // HumanModTime returns the modified time of the file

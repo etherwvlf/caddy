@@ -129,15 +129,6 @@ type Handler struct {
 	// are also set implicitly.
 	Headers *headers.Handler `json:"headers,omitempty"`
 
-	// DEPRECATED: Do not use; will be removed. See request_buffers instead.
-	DeprecatedBufferRequests bool `json:"buffer_requests,omitempty"`
-
-	// DEPRECATED: Do not use; will be removed. See response_buffers instead.
-	DeprecatedBufferResponses bool `json:"buffer_responses,omitempty"`
-
-	// DEPRECATED: Do not use; will be removed. See request_buffers and response_buffers instead.
-	DeprecatedMaxBufferSize int64 `json:"max_buffer_size,omitempty"`
-
 	// If nonzero, the entire request body up to this size will be read
 	// and buffered in memory before being proxied to the backend. This
 	// should be avoided if at all possible for performance reasons, but
@@ -240,17 +231,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger()
 	h.connections = make(map[io.ReadWriteCloser]openConnection)
 	h.connectionsMu = new(sync.Mutex)
-
-	// TODO: remove deprecated fields sometime after v2.6.4
-	if h.DeprecatedBufferRequests {
-		h.logger.Warn("DEPRECATED: buffer_requests: this property will be removed soon; use request_buffers instead (and set a maximum buffer size)")
-	}
-	if h.DeprecatedBufferResponses {
-		h.logger.Warn("DEPRECATED: buffer_responses: this property will be removed soon; use response_buffers instead (and set a maximum buffer size)")
-	}
-	if h.DeprecatedMaxBufferSize != 0 {
-		h.logger.Warn("DEPRECATED: max_buffer_size: this property will be removed soon; use request_buffers and/or response_buffers instead (and set maximum buffer sizes)")
-	}
 
 	// warn about unsafe buffering config
 	if h.RequestBuffers == -1 || h.ResponseBuffers == -1 {
@@ -439,10 +419,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	var proxyErr error
 	var retries int
 	for {
+		// if the request body was buffered (and only the entire body, hence no body
+		// set to read from after the buffer), make reading from the body idempotent
+		// and reusable, so if a backend partially or fully reads the body but then
+		// produces an error, the request can be repeated to the next backend with
+		// the full body (retries should only happen for idempotent requests) (see #6259)
+		if reqBodyBuf, ok := r.Body.(bodyReadCloser); ok && reqBodyBuf.body == nil {
+			r.Body = io.NopCloser(bytes.NewReader(reqBodyBuf.buf.Bytes()))
+		}
+
 		var done bool
 		done, proxyErr = h.proxyLoopIteration(clonedReq, r, w, proxyErr, start, retries, repl, reqHeader, reqHost, next)
 		if done {
 			break
+		}
+		if h.VerboseLogs {
+			var lbWait time.Duration
+			if h.LoadBalancing != nil {
+				lbWait = time.Duration(h.LoadBalancing.TryInterval)
+			}
+			h.logger.Debug("retrying", zap.Error(proxyErr), zap.Duration("after", lbWait))
 		}
 		retries++
 	}
@@ -607,6 +603,18 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 	// disable it so it's not set to default value by std lib
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
+	}
+
+	// Indicate if request has been conveyed in early data.
+	// RFC 8470: "An intermediary that forwards a request prior to the
+	// completion of the TLS handshake with its client MUST send it with
+	// the Early-Data header field set to “1” (i.e., it adds it if not
+	// present in the request). An intermediary MUST use the Early-Data
+	// header field if the request might have been subject to a replay and
+	// might already have been forwarded by it or another instance
+	// (see Section 6.2)."
+	if req.TLS != nil && !req.TLS.HandshakeComplete {
+		req.Header.Set("Early-Data", "1")
 	}
 
 	reqUpType := upgradeType(req.Header)
@@ -922,7 +930,9 @@ func (h *Handler) finalizeResponse(
 ) error {
 	// deal with 101 Switching Protocols responses: (WebSocket, h2c, etc)
 	if res.StatusCode == http.StatusSwitchingProtocols {
-		h.handleUpgradeResponse(logger, rw, req, res)
+		var wg sync.WaitGroup
+		h.handleUpgradeResponse(logger, &wg, rw, req, res)
+		wg.Wait()
 		return nil
 	}
 
@@ -1129,7 +1139,7 @@ func (h Handler) bufferedBody(originalBody io.ReadCloser, limit int64) (io.ReadC
 	buf.Reset()
 	if limit > 0 {
 		n, err := io.CopyN(buf, originalBody, limit)
-		if err != nil || n == limit {
+		if (err != nil && err != io.EOF) || n == limit {
 			return bodyReadCloser{
 				Reader: io.MultiReader(buf, originalBody),
 				buf:    buf,

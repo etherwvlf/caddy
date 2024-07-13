@@ -48,7 +48,7 @@ func (ts Tailscale) GetCertificate(ctx context.Context, hello *tls.ClientHelloIn
 	if err != nil {
 		ts.logger.Warn("could not get status; will try to get certificate anyway", zap.Error(err))
 	}
-	return tscert.GetCertificate(hello)
+	return tscert.GetCertificateWithContext(ctx, hello)
 }
 
 // canHazCertificate returns true if Tailscale reports it can get a certificate for the given ClientHello.
@@ -96,6 +96,11 @@ type HTTPCertGetter struct {
 	// To be valid, the response must be HTTP 200 with a PEM body
 	// consisting of blocks for the certificate chain and the private
 	// key.
+	//
+	// To indicate that this manager is not managing a certificate for
+	// the described handshake, the endpoint should return HTTP 204
+	// (No Content). Error statuses will indicate that the manager is
+	// capable of providing a certificate but was unable to.
 	URL string `json:"url,omitempty"`
 
 	ctx context.Context
@@ -147,6 +152,10 @@ func (hcg HTTPCertGetter) GetCertificate(ctx context.Context, hello *tls.ClientH
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		// endpoint is not managing certs for this handshake
+		return nil, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("got HTTP %d", resp.StatusCode)
 	}

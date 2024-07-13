@@ -119,11 +119,46 @@ func addHTTPVarsToReplacer(repl *caddy.Replacer, req *http.Request, w http.Respo
 				return port, true
 			case "http.request.hostport":
 				return req.Host, true
+			case "http.request.local":
+				localAddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+				return localAddr.String(), true
+			case "http.request.local.host":
+				localAddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+				host, _, err := net.SplitHostPort(localAddr.String())
+				if err != nil {
+					// localAddr is host:port for tcp and udp sockets and /unix/socket.path
+					// for unix sockets. net.SplitHostPort only operates on tcp and udp sockets,
+					// not unix sockets and will fail with the latter.
+					// We assume when net.SplitHostPort fails, localAddr is a unix socket and thus
+					// already "split" and save to return.
+					return localAddr, true
+				}
+				return host, true
+			case "http.request.local.port":
+				localAddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+				_, port, _ := net.SplitHostPort(localAddr.String())
+				if portNum, err := strconv.Atoi(port); err == nil {
+					return portNum, true
+				}
+				return port, true
 			case "http.request.remote":
+				if req.TLS != nil && !req.TLS.HandshakeComplete {
+					// without a complete handshake (QUIC "early data") we can't trust the remote IP address to not be spoofed
+					return nil, true
+				}
 				return req.RemoteAddr, true
 			case "http.request.remote.host":
+				if req.TLS != nil && !req.TLS.HandshakeComplete {
+					// without a complete handshake (QUIC "early data") we can't trust the remote IP address to not be spoofed
+					return nil, true
+				}
 				host, _, err := net.SplitHostPort(req.RemoteAddr)
 				if err != nil {
+					// req.RemoteAddr is host:port for tcp and udp sockets and /unix/socket.path
+					// for unix sockets. net.SplitHostPort only operates on tcp and udp sockets,
+					// not unix sockets and will fail with the latter.
+					// We assume when net.SplitHostPort fails, req.RemoteAddr is a unix socket
+					// and thus already "split" and save to return.
 					return req.RemoteAddr, true
 				}
 				return host, true

@@ -33,7 +33,7 @@ jobs:
           GO_SEMVER: '~1.21.0'
 
         - go: '1.22'
-          GO_SEMVER: '~1.22.1'
+          GO_SEMVER: '~1.22.3'
 
         # Set some variables per OS, usable via ${{ matrix.VAR }}
         # OS_LABEL: the VM label from GitHub Actions (see https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners#standard-github-hosted-runners-for-public-repositories)
@@ -101,6 +101,12 @@ jobs:
       run: |
         go build -tags nobdger -trimpath -ldflags="-w -s" -v
 
+    - name: Smoke test Caddy
+      working-directory: ./cmd/caddy
+      run: |
+        ./caddy start
+        ./caddy stop
+
     - name: Publish Build Artifact
       uses: actions/upload-artifact@v4
       with:
@@ -151,7 +157,7 @@ jobs:
 
           # The environment is fresh, so there's no point in keeping accepting and adding the key.
           rsync -arz -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" --progress --delete --exclude '.git' . "$CI_USER"@ci-s390x.caddyserver.com:/var/tmp/"$short_sha"
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -t "$CI_USER"@ci-s390x.caddyserver.com "cd /var/tmp/$short_sha; go version; go env; printf "\n\n";CGO_ENABLED=0 go test -tags nobadger -v ./..."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -t "$CI_USER"@ci-s390x.caddyserver.com "cd /var/tmp/$short_sha; go version; go env; printf "\n\n";CGO_ENABLED=0 go test -p 1 -tags nobadger -v ./..."
           test_result=$?
 
           # There's no need leaving the files around
@@ -169,7 +175,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - uses: goreleaser/goreleaser-action@v5
+      - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
           args: check

@@ -30,6 +30,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/headers"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
+	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
 func init() {
@@ -74,9 +75,11 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 //	    health_timeout  <duration>
 //	    health_status   <status>
 //	    health_body     <regexp>
+//	    health_follow_redirects
 //	    health_headers {
 //	        <field> [<values...>]
 //	    }
+//	    health_method   <value>
 //
 //	    # passive health checking
 //	    fail_duration     <duration>
@@ -385,6 +388,18 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			h.HealthChecks.Active.Headers = healthHeaders
 
+		case "health_method":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			if h.HealthChecks == nil {
+				h.HealthChecks = new(HealthChecks)
+			}
+			if h.HealthChecks.Active == nil {
+				h.HealthChecks.Active = new(ActiveHealthChecks)
+			}
+			h.HealthChecks.Active.Method = d.Val()
+
 		case "health_interval":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -448,6 +463,18 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				h.HealthChecks.Active = new(ActiveHealthChecks)
 			}
 			h.HealthChecks.Active.ExpectBody = d.Val()
+
+		case "health_follow_redirects":
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+			if h.HealthChecks == nil {
+				h.HealthChecks = new(HealthChecks)
+			}
+			if h.HealthChecks.Active == nil {
+				h.HealthChecks.Active = new(ActiveHealthChecks)
+			}
+			h.HealthChecks.Active.FollowRedirects = true
 
 		case "health_passes":
 			if !d.NextArg() {
@@ -605,33 +632,6 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			} else if subdir == "response_buffers" {
 				h.ResponseBuffers = size
 			}
-
-		// TODO: These three properties are deprecated; remove them sometime after v2.6.4
-		case "buffer_requests": // TODO: deprecated
-			if d.NextArg() {
-				return d.ArgErr()
-			}
-			caddy.Log().Named("config.adapter.caddyfile").Warn("DEPRECATED: buffer_requests: use request_buffers instead (with a maximum buffer size)")
-			h.DeprecatedBufferRequests = true
-		case "buffer_responses": // TODO: deprecated
-			if d.NextArg() {
-				return d.ArgErr()
-			}
-			caddy.Log().Named("config.adapter.caddyfile").Warn("DEPRECATED: buffer_responses: use response_buffers instead (with a maximum buffer size)")
-			h.DeprecatedBufferResponses = true
-		case "max_buffer_size": // TODO: deprecated
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			size, err := humanize.ParseBytes(d.Val())
-			if err != nil {
-				return d.Errf("invalid byte size '%s': %v", d.Val(), err)
-			}
-			if d.NextArg() {
-				return d.ArgErr()
-			}
-			caddy.Log().Named("config.adapter.caddyfile").Warn("DEPRECATED: max_buffer_size: use request_buffers and/or response_buffers instead (with maximum buffer sizes)")
-			h.DeprecatedMaxBufferSize = int64(size)
 
 		case "stream_timeout":
 			if !d.NextArg() {
@@ -1138,12 +1138,16 @@ func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			h.TLS.HandshakeTimeout = caddy.Duration(dur)
 
 		case "tls_trusted_ca_certs":
+			caddy.Log().Warn("The 'tls_trusted_ca_certs' field is deprecated. Use the 'tls_trust_pool' field instead.")
 			args := d.RemainingArgs()
 			if len(args) == 0 {
 				return d.ArgErr()
 			}
 			if h.TLS == nil {
 				h.TLS = new(TLSConfig)
+			}
+			if len(h.TLS.CARaw) != 0 {
+				return d.Err("cannot specify both 'tls_trust_pool' and 'tls_trusted_ca_certs")
 			}
 			h.TLS.RootCAPEMFiles = args
 
@@ -1260,6 +1264,31 @@ func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			h.MaxConnsPerHost = num
 
+		case "tls_trust_pool":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			modStem := d.Val()
+			modID := "tls.ca_pool.source." + modStem
+			unm, err := caddyfile.UnmarshalModule(d, modID)
+			if err != nil {
+				return err
+			}
+			ca, ok := unm.(caddytls.CA)
+			if !ok {
+				return d.Errf("module %s is not a caddytls.CA", modID)
+			}
+			if h.TLS == nil {
+				h.TLS = new(TLSConfig)
+			}
+			if len(h.TLS.RootCAPEMFiles) != 0 {
+				return d.Err("cannot specify both 'tls_trust_pool' and 'tls_trusted_ca_certs'")
+			}
+			if h.TLS.CARaw != nil {
+				return d.Err("cannot specify \"tls_trust_pool\" twice in caddyfile")
+			}
+			h.TLS.CARaw = caddyconfig.JSONModuleObject(ca, "provider", modStem, nil)
+
 		default:
 			return d.Errf("unrecognized subdirective %s", d.Val())
 		}
@@ -1354,6 +1383,7 @@ func (h *CopyResponseHeadersHandler) UnmarshalCaddyfile(d *caddyfile.Dispenser) 
 //	    resolvers           <resolvers...>
 //	    dial_timeout        <timeout>
 //	    dial_fallback_delay <timeout>
+//	    grace_period        <duration>
 //	}
 func (u *SRVUpstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume upstream source name
@@ -1433,7 +1463,15 @@ func (u *SRVUpstreams) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("bad delay value '%s': %v", d.Val(), err)
 			}
 			u.FallbackDelay = caddy.Duration(dur)
-
+		case "grace_period":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			dur, err := caddy.ParseDuration(d.Val())
+			if err != nil {
+				return d.Errf("bad grace period value '%s': %v", d.Val(), err)
+			}
+			u.GracePeriod = caddy.Duration(dur)
 		default:
 			return d.Errf("unrecognized srv option '%s'", d.Val())
 		}

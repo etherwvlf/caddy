@@ -82,6 +82,12 @@ type ActiveHealthChecks struct {
 	// HTTP headers to set on health check requests.
 	Headers http.Header `json:"headers,omitempty"`
 
+	// The HTTP method to use for health checks (default "GET").
+	Method string `json:"method,omitempty"`
+
+	// Whether to follow HTTP redirects in response to active health checks (default off).
+	FollowRedirects bool `json:"follow_redirects,omitempty"`
+
 	// How frequently to perform active health checks (default 30s).
 	Interval caddy.Duration `json:"interval,omitempty"`
 
@@ -130,6 +136,11 @@ func (a *ActiveHealthChecks) Provision(ctx caddy.Context, h *Handler) error {
 	}
 	a.Headers = cleaned
 
+	// If Method is not set, default to GET
+	if a.Method == "" {
+		a.Method = http.MethodGet
+	}
+
 	h.HealthChecks.Active.logger = h.logger.Named("health_checker.active")
 
 	timeout := time.Duration(a.Timeout)
@@ -153,6 +164,12 @@ func (a *ActiveHealthChecks) Provision(ctx caddy.Context, h *Handler) error {
 	a.httpClient = &http.Client{
 		Timeout:   timeout,
 		Transport: h.Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !a.FollowRedirects {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
 	}
 
 	for _, upstream := range h.Upstreams {
@@ -303,7 +320,7 @@ func (h *Handler) doActiveHealthCheckForAllHosts() {
 				// so use a fake Host value instead; unix sockets are usually local
 				hostAddr = "localhost"
 			}
-			err = h.doActiveHealthCheck(DialInfo{Network: addr.Network, Address: dialAddr}, hostAddr, upstream)
+			err = h.doActiveHealthCheck(DialInfo{Network: addr.Network, Address: dialAddr}, hostAddr, networkAddr, upstream)
 			if err != nil {
 				h.HealthChecks.Active.logger.Error("active health check failed",
 					zap.String("address", hostAddr),
@@ -321,7 +338,7 @@ func (h *Handler) doActiveHealthCheckForAllHosts() {
 // according to whether it passes the health check. An error is
 // returned only if the health check fails to occur or if marking
 // the host's health status fails.
-func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstream *Upstream) error {
+func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, networkAddr string, upstream *Upstream) error {
 	// create the URL for the request that acts as a health check
 	u := &url.URL{
 		Scheme: "http",
@@ -368,7 +385,7 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstre
 	ctx = context.WithValue(ctx, caddyhttp.VarsCtxKey, map[string]any{
 		dialInfoVarKey: dialInfo,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, h.HealthChecks.Active.Method, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("making request: %v", err)
 	}
@@ -377,6 +394,7 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstre
 
 	// set headers, using a replacer with only globals (env vars, system info, etc.)
 	repl := caddy.NewReplacer()
+	repl.Set("http.reverse_proxy.active.target_upstream", networkAddr)
 	for key, vals := range h.HealthChecks.Active.Headers {
 		key = repl.ReplaceAll(key, "")
 		if key == "Host" {
@@ -417,6 +435,7 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstre
 		}
 		if upstream.Host.activeHealthPasses() >= h.HealthChecks.Active.Passes {
 			if upstream.setHealthy(true) {
+				h.HealthChecks.Active.logger.Info("host is up", zap.String("host", hostAddr))
 				h.events.Emit(h.ctx, "healthy", map[string]any{"host": hostAddr})
 				upstream.Host.resetHealth()
 			}
@@ -453,7 +472,7 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstre
 			markUnhealthy()
 			return nil
 		}
-	} else if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		h.HealthChecks.Active.logger.Info("status code out of tolerances",
 			zap.Int("status_code", resp.StatusCode),
 			zap.String("host", hostAddr),
@@ -483,7 +502,6 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, upstre
 	}
 
 	// passed health check parameters, so mark as healthy
-	h.HealthChecks.Active.logger.Info("host is up", zap.String("host", hostAddr))
 	markHealthy()
 
 	return nil
