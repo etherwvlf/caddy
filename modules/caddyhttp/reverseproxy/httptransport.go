@@ -33,6 +33,7 @@ import (
 	"github.com/pires/go-proxyproto"
 	"github.com/quic-go/quic-go/http3"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/net/http2"
 
 	"github.com/caddyserver/caddy/v2"
@@ -132,6 +133,10 @@ type HTTPTransport struct {
 	// to change or removal while experimental.
 	Versions []string `json:"versions,omitempty"`
 
+	// Specify the address to bind to when connecting to an upstream. In other words,
+	// it is the address the upstream sees as the remote address.
+	LocalAddress string `json:"local_address,omitempty"`
+
 	// The pre-configured underlying HTTP transport.
 	Transport *http.Transport `json:"-"`
 
@@ -185,6 +190,31 @@ func (h *HTTPTransport) NewTransport(caddyCtx caddy.Context) (*http.Transport, e
 		FallbackDelay: time.Duration(h.FallbackDelay),
 	}
 
+	if h.LocalAddress != "" {
+		netaddr, err := caddy.ParseNetworkAddressWithDefaults(h.LocalAddress, "tcp", 0)
+		if err != nil {
+			return nil, err
+		}
+		if netaddr.PortRangeSize() > 1 {
+			return nil, fmt.Errorf("local_address must be a single address, not a port range")
+		}
+		switch netaddr.Network {
+		case "tcp", "tcp4", "tcp6":
+			dialer.LocalAddr, err = net.ResolveTCPAddr(netaddr.Network, netaddr.JoinHostPort(0))
+			if err != nil {
+				return nil, err
+			}
+		case "unix", "unixgram", "unixpacket":
+			dialer.LocalAddr, err = net.ResolveUnixAddr(netaddr.Network, netaddr.JoinHostPort(0))
+			if err != nil {
+				return nil, err
+			}
+		case "udp", "udp4", "udp6":
+			return nil, fmt.Errorf("local_address must be a TCP address, not a UDP address")
+		default:
+			return nil, fmt.Errorf("unsupported network")
+		}
+	}
 	if h.Resolver != nil {
 		err := h.Resolver.ParseAddresses()
 		if err != nil {
@@ -446,6 +476,9 @@ func (h *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// if H2C ("HTTP/2 over cleartext") is enabled and the upstream request is
 	// HTTP without TLS, use the alternate H2C-capable transport instead
 	if req.URL.Scheme == "http" && h.h2cTransport != nil {
+		// There is no dedicated DisableKeepAlives field in *http2.Transport.
+		// This is an alternative way to disable keep-alive.
+		req.Close = h.Transport.DisableKeepAlives
 		return h.h2cTransport.RoundTrip(req)
 	}
 
@@ -718,7 +751,9 @@ func (c *tcpRWTimeoutConn) Read(b []byte) (int, error) {
 	if c.readTimeout > 0 {
 		err := c.TCPConn.SetReadDeadline(time.Now().Add(c.readTimeout))
 		if err != nil {
-			c.logger.Error("failed to set read deadline", zap.Error(err))
+			if ce := c.logger.Check(zapcore.ErrorLevel, "failed to set read deadline"); ce != nil {
+				ce.Write(zap.Error(err))
+			}
 		}
 	}
 	return c.TCPConn.Read(b)
@@ -728,7 +763,9 @@ func (c *tcpRWTimeoutConn) Write(b []byte) (int, error) {
 	if c.writeTimeout > 0 {
 		err := c.TCPConn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 		if err != nil {
-			c.logger.Error("failed to set write deadline", zap.Error(err))
+			if ce := c.logger.Check(zapcore.ErrorLevel, "failed to set write deadline"); ce != nil {
+				ce.Write(zap.Error(err))
+			}
 		}
 	}
 	return c.TCPConn.Write(b)
