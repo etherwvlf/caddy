@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -329,7 +330,7 @@ func (h *Handler) doActiveHealthCheckForAllHosts() {
 				return
 			}
 			if hcp := uint(upstream.activeHealthCheckPort); hcp != 0 {
-				if addr.IsUnixNetwork() {
+				if addr.IsUnixNetwork() || addr.IsFdNetwork() {
 					addr.Network = "tcp" // I guess we just assume TCP since we are using a port??
 				}
 				addr.StartPort, addr.EndPort = hcp, hcp
@@ -344,7 +345,7 @@ func (h *Handler) doActiveHealthCheckForAllHosts() {
 			}
 			hostAddr := addr.JoinHostPort(0)
 			dialAddr := hostAddr
-			if addr.IsUnixNetwork() {
+			if addr.IsUnixNetwork() || addr.IsFdNetwork() {
 				// this will be used as the Host portion of a http.Request URL, and
 				// paths to socket files would produce an error when creating URL,
 				// so use a fake Host value instead; unix sockets are usually local
@@ -397,12 +398,8 @@ func (h *Handler) doActiveHealthCheck(dialInfo DialInfo, hostAddr string, networ
 		u.Scheme = "https"
 
 		// if the port is in the except list, flip back to HTTP
-		if ht, ok := h.Transport.(*HTTPTransport); ok {
-			for _, exceptPort := range ht.TLS.ExceptPorts {
-				if exceptPort == port {
-					u.Scheme = "http"
-				}
-			}
+		if ht, ok := h.Transport.(*HTTPTransport); ok && slices.Contains(ht.TLS.ExceptPorts, port) {
+			u.Scheme = "http"
 		}
 	}
 
