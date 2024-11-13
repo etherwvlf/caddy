@@ -24,6 +24,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
@@ -38,7 +39,8 @@ func init() {
 	RegisterGlobalOption("fallback_sni", parseOptSingleString)
 	RegisterGlobalOption("order", parseOptOrder)
 	RegisterGlobalOption("storage", parseOptStorage)
-	RegisterGlobalOption("storage_clean_interval", parseOptDuration)
+	RegisterGlobalOption("storage_check", parseStorageCheck)
+	RegisterGlobalOption("storage_clean_interval", parseStorageCleanInterval)
 	RegisterGlobalOption("renew_interval", parseOptDuration)
 	RegisterGlobalOption("ocsp_interval", parseOptDuration)
 	RegisterGlobalOption("acme_ca", parseOptSingleString)
@@ -53,6 +55,7 @@ func init() {
 	RegisterGlobalOption("local_certs", parseOptTrue)
 	RegisterGlobalOption("key_type", parseOptSingleString)
 	RegisterGlobalOption("auto_https", parseOptAutoHTTPS)
+	RegisterGlobalOption("metrics", parseMetricsOptions)
 	RegisterGlobalOption("servers", parseServerOptions)
 	RegisterGlobalOption("ocsp_stapling", parseOCSPStaplingOptions)
 	RegisterGlobalOption("cert_lifetime", parseOptDuration)
@@ -185,6 +188,40 @@ func parseOptStorage(d *caddyfile.Dispenser, _ any) (any, error) {
 		return nil, d.Errf("module %s is not a caddy.StorageConverter", modID)
 	}
 	return storage, nil
+}
+
+func parseStorageCheck(d *caddyfile.Dispenser, _ any) (any, error) {
+	d.Next() // consume option name
+	if !d.Next() {
+		return "", d.ArgErr()
+	}
+	val := d.Val()
+	if d.Next() {
+		return "", d.ArgErr()
+	}
+	if val != "off" {
+		return "", d.Errf("storage_check must be 'off'")
+	}
+	return val, nil
+}
+
+func parseStorageCleanInterval(d *caddyfile.Dispenser, _ any) (any, error) {
+	d.Next() // consume option name
+	if !d.Next() {
+		return "", d.ArgErr()
+	}
+	val := d.Val()
+	if d.Next() {
+		return "", d.ArgErr()
+	}
+	if val == "off" {
+		return false, nil
+	}
+	dur, err := caddy.ParseDuration(d.Val())
+	if err != nil {
+		return nil, d.Errf("failed to parse storage_clean_interval, must be a duration or 'off' %w", err)
+	}
+	return caddy.Duration(dur), nil
 }
 
 func parseOptDuration(d *caddyfile.Dispenser, _ any) (any, error) {
@@ -394,36 +431,10 @@ func parseOptOnDemand(d *caddyfile.Dispenser, _ any) (any, error) {
 			ond.PermissionRaw = caddyconfig.JSONModuleObject(perm, "module", modName, nil)
 
 		case "interval":
-			if !d.NextArg() {
-				return nil, d.ArgErr()
-			}
-			dur, err := caddy.ParseDuration(d.Val())
-			if err != nil {
-				return nil, err
-			}
-			if ond == nil {
-				ond = new(caddytls.OnDemandConfig)
-			}
-			if ond.RateLimit == nil {
-				ond.RateLimit = new(caddytls.RateLimit)
-			}
-			ond.RateLimit.Interval = caddy.Duration(dur)
+			return nil, d.Errf("the on_demand_tls 'interval' option is no longer supported, remove it from your config")
 
 		case "burst":
-			if !d.NextArg() {
-				return nil, d.ArgErr()
-			}
-			burst, err := strconv.Atoi(d.Val())
-			if err != nil {
-				return nil, err
-			}
-			if ond == nil {
-				ond = new(caddytls.OnDemandConfig)
-			}
-			if ond.RateLimit == nil {
-				ond.RateLimit = new(caddytls.RateLimit)
-			}
-			ond.RateLimit.Burst = burst
+			return nil, d.Errf("the on_demand_tls 'burst' option is no longer supported, remove it from your config")
 
 		default:
 			return nil, d.Errf("unrecognized parameter '%s'", d.Val())
@@ -470,6 +481,24 @@ func parseOptAutoHTTPS(d *caddyfile.Dispenser, _ any) (any, error) {
 		}
 	}
 	return val, nil
+}
+
+func unmarshalCaddyfileMetricsOptions(d *caddyfile.Dispenser) (any, error) {
+	d.Next() // consume option name
+	metrics := new(caddyhttp.Metrics)
+	for d.NextBlock(0) {
+		switch d.Val() {
+		case "per_host":
+			metrics.PerHost = true
+		default:
+			return nil, d.Errf("unrecognized servers option '%s'", d.Val())
+		}
+	}
+	return metrics, nil
+}
+
+func parseMetricsOptions(d *caddyfile.Dispenser, _ any) (any, error) {
+	return unmarshalCaddyfileMetricsOptions(d)
 }
 
 func parseServerOptions(d *caddyfile.Dispenser, _ any) (any, error) {

@@ -92,6 +92,17 @@ type TLS struct {
 	// EXPERIMENTAL. Subject to change.
 	DisableStorageCheck bool `json:"disable_storage_check,omitempty"`
 
+	// Disables the automatic cleanup of the storage backend.
+	// This is useful when TLS is not being used to store certificates
+	// and the user wants run their server in a read-only mode.
+	//
+	// Storage cleaning creates two files: instance.uuid and last_clean.json.
+	// The instance.uuid file is used to identify the instance of Caddy
+	// in a cluster. The last_clean.json file is used to store the last
+	// time the storage was cleaned.
+	// EXPERIMENTAL. Subject to change.
+	DisableStorageClean bool `json:"disable_storage_clean,omitempty"`
+
 	certificateLoaders []CertificateLoader
 	automateNames      []string
 	ctx                caddy.Context
@@ -186,17 +197,6 @@ func (t *TLS) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("loading on-demand TLS permission module: %v", err)
 		}
 		t.Automation.OnDemand.permission = val.(OnDemandPermission)
-	}
-
-	// on-demand rate limiting (TODO: deprecated, and should be removed later; rate limiting is ineffective now that permission modules are required)
-	if t.Automation != nil && t.Automation.OnDemand != nil && t.Automation.OnDemand.RateLimit != nil {
-		t.logger.Warn("DEPRECATED: on_demand.rate_limit will be removed in a future release; use permission modules or external certificate managers instead")
-		onDemandRateLimiter.SetMaxEvents(t.Automation.OnDemand.RateLimit.Burst)
-		onDemandRateLimiter.SetWindow(time.Duration(t.Automation.OnDemand.RateLimit.Interval))
-	} else {
-		// remove any existing rate limiter
-		onDemandRateLimiter.SetWindow(0)
-		onDemandRateLimiter.SetMaxEvents(0)
 	}
 
 	// run replacer on ask URL (for environment variables) -- return errors to prevent surprises (#5036)
@@ -339,7 +339,11 @@ func (t *TLS) Start() error {
 		return fmt.Errorf("automate: managing %v: %v", t.automateNames, err)
 	}
 
-	t.keepStorageClean()
+	if !t.DisableStorageClean {
+		// start the storage cleaner goroutine and ticker,
+		// which cleans out expired certificates and more
+		t.keepStorageClean()
+	}
 
 	return nil
 }
