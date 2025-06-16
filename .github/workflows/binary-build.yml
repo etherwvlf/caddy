@@ -1,0 +1,51 @@
+name: Build Binary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add Upstream and Fetch
+        run: |
+          git remote add upstream https://github.com/caddyserver/caddy.git || true
+          git fetch upstream master --tags
+
+      - name: Rebase onto Upstream
+        run: |
+          git checkout master
+          git rebase upstream/master
+
+      - name: Detect Go Version
+        id: go_version
+        run: |
+          GO_VERSION=$(awk '/^go / { print $2 }' go.mod)
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ steps.go_version.outputs.go_version }}"
+
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build with Custom Modules
+        run: |
+          xcaddy build \
+            --with github.com/caddyserver/caddy/v2=github.com/etherwvlf/caddy/v2@master \
+            --with github.com/git001/caddyv2-upload \
+            --with github.com/caddyserver/transform-encoder \
+            --output ./caddy-linux-amd64
+
+      - name: Upload Binary as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-linux-amd64
+          path: ./caddy-linux-amd64
