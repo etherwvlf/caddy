@@ -10,45 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
+      actions: write  # This is the key permission
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add upstream remote
         run: |
           git remote add upstream https://github.com/caddyserver/caddy.git
           git fetch upstream
 
-      - name: Create sync branch
+      - name: Rebase onto upstream
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b sync-$(date +%s) upstream/master
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git checkout master
+          git rebase upstream/master
 
-      - name: Rebase changes onto new branch
-        run: |
-          # List and rebase your custom commits
-          git cherry-pick $(git log origin/master --format=%H --not upstream/master)
-          
-          # Preserve your workflow files
-          git checkout origin/master -- .github/workflows/
-          git add .github/workflows/
-          git commit -m "Preserve custom workflows"
-
-      - name: Push to new branch
-        run: git push origin HEAD -f
-
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
-        with:
-          title: "Sync with upstream $(date +'%Y-%m-%d')"
-          body: "Automated synchronization with upstream repository"
-          base: master
-          branch: sync-branch
-          delete-branch: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Force push
+        run: git push origin master --force
