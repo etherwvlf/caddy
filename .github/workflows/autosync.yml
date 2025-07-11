@@ -8,16 +8,17 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Explicitly grant required permissions
     permissions:
       contents: write
-      actions: write  # This is the key permission
+      workflows: write  # Critical permission for modifying workflows
+      actions: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add upstream remote
         run: |
