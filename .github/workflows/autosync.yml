@@ -8,29 +8,26 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # Explicitly grant required permissions
     permissions:
-      contents: write
-      workflows: write  # Critical permission for modifying workflows
-      actions: write
+      contents: write  # Only this permission is needed
 
     steps:
-      - name: Checkout repository
+      - name: Checkout with full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Add upstream remote
+      - name: Add upstream
         run: |
           git remote add upstream https://github.com/caddyserver/caddy.git
           git fetch upstream
 
-      - name: Rebase onto upstream
+      - name: Rebase changes
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout master
           git rebase upstream/master
 
-      - name: Force push
+      - name: Push changes
         run: git push origin master --force
