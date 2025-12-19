@@ -301,11 +301,6 @@ type Server struct {
 	onStopFuncs      []func(context.Context) error // TODO: Experimental (Nov. 2023)
 }
 
-var (
-	ServerHeader = "Caddy"
-	serverHeader = []string{ServerHeader}
-)
-
 // ServeHTTP is the entry point for all HTTP requests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -329,7 +324,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// set the Server header
 	h := w.Header()
-	h["Server"] = serverHeader
 
 	// advertise HTTP/3, if enabled
 	if s.h3server != nil && r.ProtoMajor < 3 {
