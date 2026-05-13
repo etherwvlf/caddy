@@ -302,10 +302,7 @@ type Server struct {
 
 var defaultProtocols = []string{"h1", "h2", "h3"}
 
-var (
-	ServerHeader = "Caddy"
-	serverHeader = []string{ServerHeader}
-)
+var ServerHeader = "WS"
 
 // ServeHTTP is the entry point for all HTTP requests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -328,10 +325,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// set the Server header
 	h := w.Header()
-	h["Server"] = serverHeader
-
+	
 	// advertise HTTP/3, if enabled
 	if s.h3server != nil && r.ProtoMajor < 3 {
 		if err := s.h3server.SetQUICHeaders(h); err != nil {
